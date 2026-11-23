@@ -162,3 +162,9 @@ dialog p { color: var(--muted); }
 .video-preview a { display: inline-block; padding: 8px 14px; }
 .post-detail .post-media { margin-top: 12px; }
 .post-detail .media-slide :is(img, video) { max-height: 560px; }
+
+.post-grid .card:not(:has(.post-media)) .card-content {
+  grid-row: 1 / 3;
+  align-self: start;
+}
+.post-grid .card:not(:has(.post-media)) .post-preview { -webkit-line-clamp: 12; }
