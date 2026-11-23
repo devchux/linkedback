@@ -168,3 +168,9 @@ dialog p { color: var(--muted); }
   align-self: start;
 }
 .post-grid .card:not(:has(.post-media)) .post-preview { -webkit-line-clamp: 12; }
+
+.bulk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 12px; }
+.bulk-actions span { color: var(--muted); }
+.post-select { width: 20px; height: 20px; flex: none; margin: 7px 0; accent-color: var(--blue); cursor: pointer; }
+.card-header .post-select { margin-inline-start: auto; }
+.card[data-selected] { border-color: var(--blue); }

@@ -87,6 +87,7 @@ function Illustration() {
 type Confirmation =
   | { type: "clear" }
   | { type: "delete"; id: string }
+  | { type: "delete-many"; ids: string[] }
   | { type: "retention"; days: Retention };
 const startOfDay = (offset = 0) => {
   const date = new Date();
@@ -251,6 +252,7 @@ function App() {
     null,
   );
   const detail = history.posts.find((post) => post.id === detailId);
+  const [selection, setSelection] = useState<Set<string>>();
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const [busy, setBusy] = useState(false);
   const [celebration, setCelebration] = useState(false);
@@ -347,16 +349,23 @@ function App() {
     group.push(item);
     groups.set(key, group);
   }
+  const matchingIds = [...groups.values()].flatMap(posts => posts.map(post => post.id));
+  const selectedIds = matchingIds.filter(id => selection?.has(id));
+  const allSelected = matchingIds.length > 0 && selectedIds.length === matchingIds.length;
+  const deleteCount = confirmation?.type === "delete-many" ? confirmation.ids.length : 0;
   const danger = confirmation?.type !== "retention";
   const days =
     confirmation?.type === "retention" ? confirmation.days : undefined;
   const title =
-    confirmation?.type === "delete"
+    deleteCount ? `Delete ${deleteCount} ${deleteCount === 1 ? "post" : "posts"}?`
+    : confirmation?.type === "delete"
       ? "Delete this post?"
       : confirmation?.type === "clear"
         ? "Clear your history?"
         : "Change your LinkedBack history option?";
-  const explanation = days
+  const explanation = deleteCount
+    ? "This will permanently remove the selected posts from your LinkedBack history. This action cannot be undone."
+    : days
     ? "You’re switching from " +
       history.retention +
       " days to " +
@@ -510,6 +519,25 @@ function App() {
                 </select>
               </label>
             </div>
+            {loaded && (groups.size > 0 || selection) && (
+              <div className="bulk-actions" role="group" aria-label="Bulk post actions">
+                {selection ? (
+                  <>
+                    <button disabled={matchingIds.length === 0} onClick={() => {
+                      setSelection(allSelected ? new Set() : new Set(matchingIds));
+                    }}>{allSelected ? "Deselect all" : "Select all results"}</button>
+                    <span role="status">{selectedIds.length} selected</span>
+                    <button className="destructive-button" disabled={!selectedIds.length}
+                      onClick={() => setConfirmation({ type: "delete-many", ids: selectedIds })}>
+                      Delete selected
+                    </button>
+                    <button onClick={() => setSelection(undefined)}>Cancel selection</button>
+                  </>
+                ) : (
+                  <button onClick={() => setSelection(new Set())}>Select posts</button>
+                )}
+              </div>
+            )}
             {!loaded ? (
               <p role="status">Loading your history…</p>
             ) : groups.size ? (
@@ -518,10 +546,23 @@ function App() {
                   <h2>{label}</h2>
                   <div className="post-grid">
                     {posts.map((item) => (
-                      <article className="card" key={item.id}>
+                      <article className="card" key={item.id} data-selected={selection?.has(item.id) || undefined}>
                         <div className="card-content">
                           <div className="card-header">
                             <Author post={item} />
+                            {selection && (
+                              <input className="post-select" type="checkbox" checked={selection.has(item.id)}
+                                aria-label={`Select post by ${item.author || "LinkedIn member"}`}
+                                onChange={event => {
+                                  const checked = event.currentTarget.checked;
+                                  setSelection(previous => {
+                                    const next = new Set(previous);
+                                    if (checked) next.add(item.id);
+                                    else next.delete(item.id);
+                                    return next;
+                                  });
+                                }} />
+                            )}
                             <details
                               className="post-menu"
                               onBlur={(event) => {
@@ -713,6 +754,10 @@ function App() {
               setBusy(true);
               if (await send(confirmation)) {
                 if (confirmation.type === "retention") setSettings(false);
+                if (confirmation.type === "delete-many") {
+                  setSelection(undefined);
+                  setNotice(deleteCount === 1 ? "Post deleted." : `${deleteCount} posts deleted.`);
+                }
                 setConfirmation(undefined);
               }
               setBusy(false);

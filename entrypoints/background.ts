@@ -54,6 +54,9 @@ export default defineBackground(() => {
       case 'delete':
         posts.delete(action.id);
         break;
+      case 'delete-many':
+        for (const id of action.ids) posts.delete(id);
+        break;
       case 'clear':
         posts.clear();
         break;

@@ -26,6 +26,7 @@ export type Action =
   | { type: 'capture'; posts: Post[] }
   | { type: 'retention'; days: Retention }
   | { type: 'delete'; id: string }
+  | { type: 'delete-many'; ids: string[] }
   | { type: 'clear' }
   | { type: 'recover'; id: string }
   | { type: 'read' };

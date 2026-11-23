@@ -1,7 +1,21 @@
 import type { Engagement, Feed, Post } from '@/lib/history';
 
 const modernCard = '[role="listitem"][componentkey^="update-card-focus"]';
-const roots = '[data-urn^="urn:li:activity:"], [data-urn^="urn:li:ugcPost:"], .feed-shared-update-v2, [data-testid="feed-post"], ' + modernCard;
+const roots = [
+  '[data-urn^="urn:li:activity:"]',
+  '[data-urn^="urn:li:ugcPost:"]',
+  '[data-id^="urn:li:activity:"]',
+  '[data-id^="urn:li:ugcPost:"]',
+  '.feed-shared-update-v2',
+  '[data-testid="feed-post"]',
+  modernCard,
+].join(', ');
+const activityCandidates = '[role="listitem"], article, .profile-creator-shared-feed-update__container, [data-view-name="profile-activity-post"]';
+const activityPath = /^\/(?:in|company|school)\/[^/]+\/recent-activity(?:\/|$)/;
+const profileDetailsPath = /^\/(?:in|company|school)\/[^/]+\/(?:details|about)(?:\/|$)/;
+const activityList = '[data-testid^="ProfileRecentActivity"]';
+const postCards = ':is(main, [role="main"]) :is(' + roots + ')';
+const activityCards = ':is(main, [role="main"]) :is(' + activityCandidates + ')';
 const feedPath = /^\/feed(?:\/(?:following|network|for-?you))?\/?$/;
 const postUrn = /^urn:li:(?:activity|ugcPost):\d+$/;
 const text = (post: Element, selector: string) =>
@@ -97,33 +111,36 @@ function modernAuthor(card: Element, body: Element | null, menu: Element | null)
 }
 
 function readPost(element: Element, feed: Feed | undefined): Post | undefined {
-  const modern = element.matches(modernCard);
+  const modern = element.matches(modernCard) || Boolean(element.querySelector('[aria-label^="' + postMenuPrefix + '"]'));
+  const componentKey = modern ? element.getAttribute('componentkey') : null;
+  const cardKey = componentKey?.replace(/^update-card-focus/, '').replace(/FeedType_[A-Z_]+$/, '');
+  const sourceKey = cardKey ? 'linkedin-card:' + cardKey : undefined;
   let urn = [element.getAttribute('data-urn'), element.getAttribute('data-id')]
     .find(value => value && postUrn.test(value)) ?? '';
-  if (!urn) {
+  if (!urn && modern) urn = modernPostUrn(element);
+  if (!urn && !sourceKey) {
     const identity = element.querySelector('[data-urn^="urn:li:activity:"], [data-urn^="urn:li:ugcPost:"]');
     const value = identity?.getAttribute('data-urn');
     if (value && postUrn.test(value)) urn = value;
   }
   let originalUrl = '';
   for (const link of element.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    if (!URL.canParse(link.href)) continue;
     const url = new URL(link.href);
     if (url.origin !== 'https://www.linkedin.com') continue;
     const match = url.pathname.match(/^\/feed\/update\/(urn(?::|%3A)li(?::|%3A)(?:activity|ugcPost)(?::|%3A)\d+)\/?$|^\/posts\/[^/]*-activity-(\d+)(?:-[^/]*)?\/?$/i);
     if (!match) continue;
     const linkedUrn = match[1] ? decodeURIComponent(match[1]) : 'urn:li:activity:' + match[2];
+    // A quote post may link to its embedded post. Keep the outer card's identity.
+    if (!urn && sourceKey) continue;
     urn ||= linkedUrn;
     if (linkedUrn !== urn) continue;
     originalUrl = url.origin + url.pathname;
     break;
   }
-  if (!urn && modern) urn = modernPostUrn(element);
-  const componentKey = modern ? element.getAttribute('componentkey') : null;
-  const cardKey = componentKey?.slice('update-card-focus'.length).replace(/FeedType_[A-Z_]+$/, '');
   // LinkedIn can keep the old feed mounted while loading the next one.
   if (componentKey?.endsWith('FeedType_MAIN_FEED_RELEVANCE')) feed = 'for-you';
   if (componentKey && /FeedType_(?:MAIN_FEED_)?(?:NETWORK|FOLLOWING)$/.test(componentKey)) feed = 'network';
-  const sourceKey = cardKey ? 'linkedin-card:' + cardKey : undefined;
   if (!postUrn.test(urn) && !sourceKey) return;
   const menu = modern ? element.querySelector('[aria-label^="' + postMenuPrefix + '"]') : null;
   const body = element.querySelector<HTMLElement>('.feed-shared-update-v2__description, .update-components-text, [data-testid="post-text"]')
@@ -178,14 +195,34 @@ function readPost(element: Element, feed: Feed | undefined): Post | undefined {
 
 export default defineContentScript({
   matches: ['https://www.linkedin.com/*'],
+  runAt: 'document_start',
   main(ctx) {
-    const captured = new WeakMap<Element, string>();
+    let captured = new WeakMap<Element, string>();
+    let lastPath = '';
     function scan() {
-      if (!feedPath.test(location.pathname)) return;
-      const feed = currentFeed();
+      const path = location.pathname;
+      if (path !== lastPath) {
+        captured = new WeakMap();
+        lastPath = path;
+      }
+      if (profileDetailsPath.test(path)) return;
+      const activity = activityPath.test(path);
+      const feed = feedPath.test(location.pathname) ? currentFeed() : undefined;
       const batch: { element: Element; post: Post; signature: string }[] = [];
-      for (const element of document.querySelectorAll('main :is(' + roots + ')')) {
-        if (element.parentElement?.closest(roots)) continue;
+      const activityFilter = activity && document.querySelector(activityList);
+      const cards = new Set([...document.querySelectorAll(postCards)]
+        .filter(element => (!activityFilter || element.closest(activityList)) && !element.parentElement?.closest(roots)));
+      if (activity) {
+        for (const candidate of [...document.querySelectorAll(activityCards)].reverse()) {
+          if ((activityFilter && !candidate.closest(activityList)) || candidate.closest(roots) || candidate.querySelector(roots)) continue;
+          const postControl = candidate.querySelector('[aria-label^="' + postMenuPrefix + '"]');
+          const permalink = candidate.querySelector('a[href*="/feed/update/"], a[href*="/posts/"][href*="-activity-"]');
+          if (!postControl && !permalink) continue;
+          if ([...cards].some(card => card.contains(candidate) || candidate.contains(card))) continue;
+          cards.add(candidate);
+        }
+      }
+      for (const element of cards) {
         const post = readPost(element, feed);
         if (!post) continue;
         const { firstViewed, lastViewed, ...details } = post;
@@ -208,15 +245,33 @@ export default defineContentScript({
       }, retryBatch);
     }
 
-    const observer = new MutationObserver(scan);
-    observer.observe(document.documentElement, {
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.removedNodes) {
+          if (!(node instanceof Element)) continue;
+          captured.delete(node);
+          for (const card of node.querySelectorAll(roots + ', ' + activityCandidates)) captured.delete(card);
+        }
+      }
+      scan();
+    });
+    observer.observe(document, {
       childList: true,
       subtree: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['src', 'srcset', 'poster', 'aria-label', 'aria-selected', 'aria-pressed', 'aria-current', 'aria-checked', 'componentkey', 'data-urn', 'data-id'],
+      attributeFilter: ['src', 'srcset', 'poster', 'aria-label', 'aria-selected', 'aria-pressed', 'aria-current', 'aria-checked', 'componentkey', 'data-urn', 'data-id', 'id', 'href'],
     });
     ctx.addEventListener(window, 'wxt:locationchange', scan);
+    ctx.addEventListener(document, 'click', event => {
+      if (!feedPath.test(location.pathname) || !(event.target instanceof Element)) return;
+      const control = event.target.closest('button, [role="button"]');
+      const label = control?.getAttribute('aria-label') || control?.textContent?.trim() || '';
+      if (/^(?:refresh(?: (?:the )?feed)?|(?:show|load|see) (?:\d+ )?new posts?)$/i.test(label)) {
+        captured = new WeakMap();
+        ctx.setTimeout(scan, 0);
+      }
+    }, { capture: true });
     scan();
     ctx.setInterval(scan, 1000);
     ctx.onInvalidated(() => observer.disconnect());
