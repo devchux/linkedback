@@ -1,6 +1,6 @@
 import type { Engagement, Feed, Post } from '@/lib/history';
 
-const modernCard = '[role="listitem"][componentkey^="update-card-focus"]';
+const modernCard = '[componentkey^="update-card-focus"]';
 const roots = [
   '[data-urn^="urn:li:activity:"]',
   '[data-urn^="urn:li:ugcPost:"]',
@@ -14,7 +14,8 @@ const activityCandidates = '[role="listitem"], article, .profile-creator-shared-
 const activityPath = /^\/(?:in|company|school)\/[^/]+\/recent-activity(?:\/|$)/;
 const profileDetailsPath = /^\/(?:in|company|school)\/[^/]+\/(?:details|about)(?:\/|$)/;
 const activityList = '[data-testid^="ProfileRecentActivity"]';
-const postCards = ':is(main, [role="main"]) :is(' + roots + ')';
+const main = 'main, [role="main"]';
+const postCards = ':is(' + main + ') :is(' + roots + ')';
 const activityCards = ':is(main, [role="main"]) :is(' + activityCandidates + ')';
 const feedPath = /^\/feed(?:\/(?:following|network|for-?you))?\/?$/;
 const postUrn = /^urn:li:(?:activity|ugcPost):\d+$/;
@@ -86,12 +87,15 @@ function readEngagement(card: Element, body?: Element | null): Engagement {
 const profileLinks = 'a:is([href*="/in/"], [href*="/company/"], [href*="/school/"])';
 const postAge = /^\d+\s*(?:s|m|h|d|w|mo|yr|y)(?:\s|$)/i;
 const postMenuPrefix = 'Open control menu for post by ';
+const connectionDegree = /^(?:[·•]\s*)?[123](?:st|nd|rd)\+?$/i;
 
 function modernAuthor(card: Element, body: Element | null, menu: Element | null) {
   const name = menu?.getAttribute('aria-label')?.slice(postMenuPrefix.length);
   const links = [...card.querySelectorAll<HTMLAnchorElement>(profileLinks)].filter(link => !body?.contains(link));
-  const link = links.find(link => name && link.innerText.includes(name))
-    ?? links.find(link => link.innerText.trim());
+  const link = name
+    ? links.find(link => link.innerText.split('\n').some(line => line.trim() === name))
+      ?? links.find(link => link.innerText.includes(name))
+    : links.find(link => link.innerText.trim());
   if (!link) return { name, link };
   // Some cards put the headline and age alongside the profile link.
   let headline: string | undefined;
@@ -104,7 +108,8 @@ function modernAuthor(card: Element, body: Element | null, menu: Element | null)
     const details = lines.slice(authorIndex + 1);
     published ??= details.find(line => postAge.test(line));
     headline ??= details.find(line => (!name || !line.startsWith(name)) && !postAge.test(line)
-      && !/^(?:following|connect|follow|[·•]|[123](?:st|nd|rd)(?:\+)?|promoted|sponsored)$/i.test(line));
+      && !connectionDegree.test(line)
+      && !/^(?:following|connect|follow|[·•]|promoted|sponsored)$/i.test(line));
     if (headline && published) break;
   }
   return { name: name || link.innerText.trim().split('\n')[0], link, headline, published };
@@ -143,14 +148,19 @@ function readPost(element: Element, feed: Feed | undefined): Post | undefined {
   if (componentKey && /FeedType_(?:MAIN_FEED_)?(?:NETWORK|FOLLOWING)$/.test(componentKey)) feed = 'network';
   if (!postUrn.test(urn) && !sourceKey) return;
   const menu = modern ? element.querySelector('[aria-label^="' + postMenuPrefix + '"]') : null;
-  const body = element.querySelector<HTMLElement>('.feed-shared-update-v2__description, .update-components-text, [data-testid="post-text"]')
-    ?? (modern ? [...element.querySelectorAll<HTMLElement>('p[componentkey]')].find(paragraph =>
-      !menu || Boolean(menu.compareDocumentPosition(paragraph) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? null : null);
+  const body = element.querySelector<HTMLElement>('.feed-shared-update-v2__description, .update-components-text, [data-testid="post-text"], [data-view-name="feed-commentary"], .feed-shared-inline-show-more-text')
+    ?? (modern ? [...element.querySelectorAll<HTMLElement>('p[componentkey], [data-testid="expandable-text-box"]')].find(paragraph => {
+      const value = paragraph.textContent?.trim() ?? '';
+      return value && !postAge.test(value) && !connectionDegree.test(value)
+        && !paragraph.closest(profileLinks + ', button, [role="button"], time')
+        && (!menu || Boolean(menu.compareDocumentPosition(paragraph) & Node.DOCUMENT_POSITION_FOLLOWING));
+    }) ?? null : null);
   const author = modern ? modernAuthor(element, body, menu) : undefined;
-  const authorLink = author?.link ?? element.querySelector<HTMLAnchorElement>(profileLinks);
+  const authorLink = author ? author.link : element.querySelector<HTMLAnchorElement>(profileLinks);
   const authorUrl = authorLink?.origin === location.origin ? authorLink.origin + authorLink.pathname : undefined;
   const authorImage = element.querySelector<HTMLImageElement>('.update-components-actor__image img, .feed-shared-actor__image img')
-    ?? (modern ? authorLink?.querySelector<HTMLImageElement>('img') ?? element.querySelector<HTMLImageElement>('a:is([href*="/in/"], [href*="/company/"]) img') : null);
+    ?? (authorLink && [...element.querySelectorAll<HTMLAnchorElement>(profileLinks)]
+      .find(link => link.pathname === authorLink.pathname && link.querySelector('img'))?.querySelector<HTMLImageElement>('img'));
   const published = element.querySelector('time')?.getAttribute('datetime')
     || text(element, 'time, .update-components-actor__sub-description, .feed-shared-actor__sub-description')
     || author?.published;
@@ -179,8 +189,7 @@ function readPost(element: Element, feed: Feed | undefined): Post | undefined {
     authorUrl,
     published,
     engagement: readEngagement(element, body),
-    author: text(element, '.update-components-actor__title [aria-hidden="true"], .feed-shared-actor__name, [data-testid="post-author"]')
-      || author?.name || '',
+    author: author?.name || text(element, '.update-components-actor__title [aria-hidden="true"], .feed-shared-actor__name, [data-testid="post-author"]'),
     headline: text(element, '.update-components-actor__description [aria-hidden="true"], .feed-shared-actor__description, [data-testid="post-headline"]')
       || author?.headline || '',
     avatar: mediaUrl(authorImage?.currentSrc || authorImage?.src),
@@ -199,7 +208,7 @@ export default defineContentScript({
   main(ctx) {
     let captured = new WeakMap<Element, string>();
     let lastPath = '';
-    function scan() {
+    function scan(detachedCards: Set<Element> = new Set()) {
       const path = location.pathname;
       if (path !== lastPath) {
         captured = new WeakMap();
@@ -222,7 +231,7 @@ export default defineContentScript({
           cards.add(candidate);
         }
       }
-      for (const element of cards) {
+      for (const element of [...detachedCards, ...cards]) {
         const post = readPost(element, feed);
         if (!post) continue;
         const { firstViewed, lastViewed, ...details } = post;
@@ -246,23 +255,33 @@ export default defineContentScript({
     }
 
     const observer = new MutationObserver(records => {
+      const detachedCards = new Set<Element>();
       for (const record of records) {
         for (const node of record.removedNodes) {
           if (!(node instanceof Element)) continue;
-          captured.delete(node);
-          for (const card of node.querySelectorAll(roots + ', ' + activityCandidates)) captured.delete(card);
+          const parent = record.target instanceof Element ? record.target : null;
+          const removedFromMain = parent?.closest(main) && !parent.closest(roots);
+          const candidates = removedFromMain ? roots : postCards;
+          const removed = [...node.querySelectorAll(candidates)];
+          if (removedFromMain && node.matches(roots)) removed.unshift(node);
+          for (const card of removed) {
+            if (!card.isConnected && !card.parentElement?.closest(roots)) detachedCards.add(card);
+          }
         }
       }
-      scan();
+      scan(detachedCards);
     });
     observer.observe(document, {
       childList: true,
       subtree: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['src', 'srcset', 'poster', 'aria-label', 'aria-selected', 'aria-pressed', 'aria-current', 'aria-checked', 'componentkey', 'data-urn', 'data-id', 'id', 'href'],
+      attributeFilter: ['src', 'srcset', 'poster', 'aria-label', 'aria-selected', 'aria-pressed', 'aria-current', 'aria-checked', 'componentkey', 'data-urn', 'data-id', 'data-testid', 'class', 'role', 'id', 'href'],
     });
-    ctx.addEventListener(window, 'wxt:locationchange', scan);
+    ctx.addEventListener(window, 'wxt:locationchange', () => scan());
+    ctx.addEventListener(document, 'visibilitychange', () => {
+      if (document.hidden) scan();
+    });
     ctx.addEventListener(document, 'click', event => {
       if (!feedPath.test(location.pathname) || !(event.target instanceof Element)) return;
       const control = event.target.closest('button, [role="button"]');
