@@ -11,26 +11,43 @@ export default defineBackground(() => {
     const previousCount = history.posts.length;
     const posts = new Map(retained(history).map(post => [post.id, post]));
     switch (action.type) {
-      case 'capture':
+      case 'capture': {
+        const bySource = new Map([...posts.values()].filter(post => post.sourceKey).map(post => [post.sourceKey, post]));
         for (const post of action.posts) {
-          const previous = posts.get(post.id);
+          const previous = posts.get(post.id) ?? bySource.get(post.sourceKey);
           if (!previous) {
             posts.set(post.id, post);
+            if (post.sourceKey) bySource.set(post.sourceKey, post);
             continue;
           }
-          posts.set(post.id, {
+          const merged = {
             ...post,
+            id: post.url ? post.id : previous.id,
+            url: post.url || previous.url,
+            sourceKey: post.sourceKey || previous.sourceKey,
+            authorUrl: post.authorUrl || previous.authorUrl,
+            published: post.published || previous.published,
+            engagement: { ...previous.engagement, ...post.engagement },
             author: post.author || previous.author,
             headline: post.headline || previous.headline,
             avatar: post.avatar || previous.avatar,
             text: post.text.length >= previous.text.length ? post.text : previous.text,
             media: [...new Set([...post.media, ...previous.media])],
+            videos: post.videos?.length ? post.videos.map(video => {
+              const saved = previous.videos?.find(item => (video.url && item.url === video.url)
+                || (video.poster && item.poster === video.poster));
+              return { url: video.url || saved?.url, poster: video.poster || saved?.poster };
+            }) : previous.videos,
             feeds: [...new Set([...post.feeds, ...previous.feeds])],
             firstViewed: Math.min(previous.firstViewed, post.firstViewed),
             lastViewed: Math.max(previous.lastViewed, post.lastViewed),
-          });
+          };
+          if (previous.id !== merged.id) posts.delete(previous.id);
+          posts.set(merged.id, merged);
+          if (merged.sourceKey) bySource.set(merged.sourceKey, merged);
         }
         break;
+      }
       case 'retention':
         history.retention = action.days;
         break;
@@ -43,6 +60,7 @@ export default defineBackground(() => {
       case 'recover': {
         const post = posts.get(action.id);
         if (!post) throw new Error('This post is no longer in your history.');
+        if (!post.url) throw new Error('LinkedIn did not provide a link for this post.');
         await browser.tabs.create({ url: post.url, active: history.recovered });
         const celebrate = !history.recovered;
         history.recovered = true;
@@ -67,14 +85,13 @@ export default defineBackground(() => {
     return true;
   });
 
+  function expireHistory() {
+    queue = queue.then(() => apply({ type: 'read' })).catch(console.error);
+  }
+
+  browser.runtime.onStartup.addListener(expireHistory);
   browser.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name !== 'expire-history') return;
-    queue = queue.then(async () => {
-      const { history } = await browser.storage.local.get<{ history?: History }>('history');
-      if (!history) return;
-      const posts = retained(history);
-      if (posts.length !== history.posts.length) await browser.storage.local.set({ history: { ...history, posts } });
-    }).catch(console.error);
+    if (alarm.name === 'expire-history') expireHistory();
   });
   void browser.alarms.get('expire-history').then(alarm => {
     if (!alarm) return browser.alarms.create('expire-history', { periodInMinutes: 15 });

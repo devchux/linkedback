@@ -1,14 +1,21 @@
 export const day = 86_400_000;
 export type Retention = 7 | 30;
 export type Feed = 'for-you' | 'network';
+export type Engagement = Partial<Record<'reactions' | 'comments' | 'reposts', string>>;
+export type PostVideo = { url?: string; poster?: string };
 export type Post = {
   id: string;
   url: string;
+  sourceKey?: string;
+  authorUrl?: string;
+  published?: string;
+  engagement?: Engagement;
   author: string;
   headline: string;
   avatar: string;
   text: string;
   media: string[];
+  videos?: PostVideo[];
   feeds: Feed[];
   firstViewed: number;
   lastViewed: number;
