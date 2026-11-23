@@ -1,6 +1,6 @@
 # LinkedBack
 
-LinkedBack is a Chrome extension for finding LinkedIn posts you’ve previously seen. This scaffold provides a React popup and the UI tooling for building the extension.
+LinkedBack is a Chrome extension for finding LinkedIn posts you’ve previously seen. Click the LinkedBack toolbar icon to open the history dashboard in a browser tab.
 
 ## Development
 

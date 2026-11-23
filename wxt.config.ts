@@ -6,6 +6,8 @@ export default defineConfig({
   manifestVersion: 3,
   manifest: {
     name: "LinkedBack",
+    permissions: ["storage", "alarms"],
+    action: { default_title: "Open LinkedBack" },
     description: "Never lose a LinkedIn post again.",
   },
   vite: () => ({
